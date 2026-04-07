@@ -10,21 +10,44 @@ STORE = "2219"
 last_status = None
 
 def check_stock():
-    url = f"https://redsky.target.com/redsky_aggregations/v1/web/pdp_client_v2?tcin={SKU}&store_id={STORE}&key=eb7f29dbb2f34a3ca0f3d3b1d3dcbf2b"
+    url = (
+        "https://redsky.target.com/redsky_aggregations/v1/web/pdp_fulfillment_v1"
+        "?key=ff457966e64d5e877fdbad070f276d18ecec4a01"
+        f"&tcin={SKU}"
+        f"&store_id={STORE}"
+        f"&store_positions_store_id={STORE}"
+        "&has_store_positions_store_id=true"
+        f"&pricing_store_id={STORE}"
+        "&has_pricing_store_id=true"
+        "&is_bot=false"
+    )
+
     try:
         r = requests.get(url, timeout=20)
         data = r.json()
-        stores = data["data"]["product"]["availability"]["stores"]
-        for s in stores:
-            if s["location_id"] == STORE:
-                return s["availability_status"]
+
+        print("Raw response received", flush=True)
+
+        product = data.get("data", {}).get("product", {})
+        fulfillment = product.get("fulfillment", {})
+        store_options = fulfillment.get("store_options", [])
+
+        for store in store_options:
+            if str(store.get("location_id")) == STORE:
+                pickup = store.get("order_pickup", {})
+                in_store = store.get("in_store_only", {})
+
+                status = pickup.get("availability_status") or in_store.get("availability_status")
+                return status
+
         return "UNKNOWN"
+
     except Exception as e:
         print(f"Error checking stock: {e}", flush=True)
         return None
 
 def send_alert():
-    print("ITEM BACK IN STOCK!", flush=True)
+    print("🚨 ITEM BACK IN STOCK!", flush=True)
 
 def tracker_loop():
     global last_status
