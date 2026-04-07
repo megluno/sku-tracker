@@ -4,7 +4,6 @@ import time
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# Replace these with real Target values
 SKU = "94300067"
 STORE = "2219"
 
@@ -21,7 +20,7 @@ def check_stock():
                 return s["availability_status"]
         return "UNKNOWN"
     except Exception as e:
-        print("Error checking stock:", e, flush=True)
+        print(f"Error checking stock: {e}", flush=True)
         return None
 
 def send_alert():
@@ -49,12 +48,10 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 def run_server():
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", "10000"))
+    print(f"Starting server on port {port}", flush=True)
     server = HTTPServer(("0.0.0.0", port), Handler)
-    print(f"Server running on port {port}", flush=True)
     server.serve_forever()
 
-thread = threading.Thread(target=tracker_loop, daemon=True)
-thread.start()
-
+threading.Thread(target=tracker_loop, daemon=True).start()
 run_server()
