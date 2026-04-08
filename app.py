@@ -33,35 +33,34 @@ def check_stock():
         r = requests.get(url, headers=HEADERS, timeout=20)
 
         print(f"HTTP status: {r.status_code}", flush=True)
-        print(f"Content-Type: {r.headers.get('Content-Type')}", flush=True)
-        print(f"Response preview: {r.text[:300]}", flush=True)
-
-        if not r.text.strip():
-            print("Empty response body", flush=True)
-            return None
 
         data = r.json()
 
         product = data.get("data", {}).get("product", {})
+
+        # 🔥 NEW: check fulfillment summary
         fulfillment = product.get("fulfillment", {})
-        store_options = fulfillment.get("store_options", [])
-        shipping = fulfillment.get("shipping_options", {})
 
-        print(f"store_options count: {len(store_options)}", flush=True)
+        print(f"Fulfillment keys: {list(fulfillment.keys())}", flush=True)
 
-        for store in store_options:
-            if str(store.get("location_id")) == STORE:
-                pickup = store.get("order_pickup", {})
-                in_store = store.get("in_store_only", {})
+        # Try pickup first
+        pickup = fulfillment.get("pickup", {})
+        shipping = fulfillment.get("shipping", {})
 
-                status = pickup.get("availability_status") or in_store.get("availability_status")
-                print(f"Matched store {STORE}, status={status}", flush=True)
-                return status
-
+        pickup_status = pickup.get("availability_status")
         shipping_status = shipping.get("availability_status")
-        print(f"Shipping status fallback: {shipping_status}", flush=True)
 
-        return shipping_status or "UNKNOWN"
+        print(f"Pickup status: {pickup_status}", flush=True)
+        print(f"Shipping status: {shipping_status}", flush=True)
+
+        # Prefer pickup if exists
+        if pickup_status:
+            return pickup_status
+
+        if shipping_status:
+            return shipping_status
+
+        return "UNKNOWN"
 
     except Exception as e:
         print(f"Error checking stock: {e}", flush=True)
