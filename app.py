@@ -17,22 +17,21 @@ HEADERS = {
     "Origin": "https://www.target.com",
 }
 
-POSITIVE_TERMS = [
-    "in stock",
-    "limited stock",
-    "available to ship",
-    "ship it",
-    "add to cart",
-    "same day delivery",
-    "pickup today",
-]
-
 NEGATIVE_TERMS = [
     "out of stock",
     "sold out",
     "temporarily out of stock",
     "not available",
     "unavailable",
+]
+
+POSITIVE_TERMS = [
+    "in stock",
+    "limited stock",
+    "available to ship",
+    "ship it",
+    "same day delivery",
+    "pickup today",
 ]
 
 def walk_json(obj, path="root"):
@@ -70,7 +69,7 @@ def check_api():
         data = r.json()
         product = data.get("data", {}).get("product", {})
 
-        found_lines = []
+        candidate_lines = []
 
         for path, value in walk_json(product):
             if value is None:
@@ -81,18 +80,17 @@ def check_api():
             text = normalize_text(value)
             path_lower = path.lower()
 
-            # only keep lines that look relevant
             if any(word in path_lower for word in [
                 "availability", "stock", "inventory", "fulfillment",
                 "shipping", "delivery", "pickup", "cart", "buy", "purchasable"
-            ]) or any(term in text for term in POSITIVE_TERMS + NEGATIVE_TERMS):
-                found_lines.append((path, text))
+            ]) or any(term in text for term in NEGATIVE_TERMS + POSITIVE_TERMS):
+                candidate_lines.append((path, text))
 
-        print(f"API candidate lines: {len(found_lines)}", flush=True)
-        for path, text in found_lines[:25]:
+        print(f"API candidate lines: {len(candidate_lines)}", flush=True)
+        for path, text in candidate_lines[:25]:
             print(f"API SIGNAL: {path} = {text}", flush=True)
 
-        joined = " | ".join(text for _, text in found_lines)
+        joined = " | ".join(text for _, text in candidate_lines)
 
         for term in NEGATIVE_TERMS:
             if term in joined:
@@ -122,15 +120,25 @@ def check_html():
         page = normalize_text(r.text)
         print(f"HTML preview: {page[:300]}", flush=True)
 
+        # Negative terms get first priority
         for term in NEGATIVE_TERMS:
             if term in page:
                 return "OUT_OF_STOCK", f"html matched '{term}'"
 
-        for term in POSITIVE_TERMS:
-            if term in page:
-                return "IN_STOCK", f"html matched '{term}'"
+        # Only accept positive signals if they appear near purchase context
+        positive_patterns = [
+            r"(add to cart.{0,80}ship)",
+            r"(ship it.{0,80}add to cart)",
+            r"(available to ship.{0,80}add to cart)",
+            r"(in stock.{0,80}add to cart)",
+            r"(same day delivery.{0,80}add to cart)",
+        ]
 
-        return "UNKNOWN", "html no explicit stock phrase"
+        for pattern in positive_patterns:
+            if re.search(pattern, page):
+                return "IN_STOCK", f"html matched purchase pattern '{pattern}'"
+
+        return "UNKNOWN", "html no trusted stock phrase"
 
     except Exception as e:
         print(f"HTML error: {e}", flush=True)
