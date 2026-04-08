@@ -20,12 +20,10 @@ def check_stock():
     print("check_stock started", flush=True)
 
     url = (
-        "https://redsky.target.com/redsky_aggregations/v1/web/pdp_fulfillment_v1"
-        "?key=ff457966e64d5e877fdbad070f276d18ecec4a01"
+        "https://redsky.target.com/redsky_aggregations/v1/web/pdp_client_v1"
+        "?key=9f36aeafbe60771e321a7cc95a78140772ab3e96"
         f"&tcin={SKU}"
         f"&store_id={STORE}"
-        f"&store_positions_store_id={STORE}"
-        "&has_store_positions_store_id=true"
         f"&pricing_store_id={STORE}"
         "&has_pricing_store_id=true"
         "&is_bot=false"
@@ -33,6 +31,7 @@ def check_stock():
 
     try:
         r = requests.get(url, headers=HEADERS, timeout=20)
+
         print(f"HTTP status: {r.status_code}", flush=True)
         print(f"Content-Type: {r.headers.get('Content-Type')}", flush=True)
         print(f"Response preview: {r.text[:300]}", flush=True)
@@ -46,6 +45,7 @@ def check_stock():
         product = data.get("data", {}).get("product", {})
         fulfillment = product.get("fulfillment", {})
         store_options = fulfillment.get("store_options", [])
+        shipping = fulfillment.get("shipping_options", {})
 
         print(f"store_options count: {len(store_options)}", flush=True)
 
@@ -53,19 +53,22 @@ def check_stock():
             if str(store.get("location_id")) == STORE:
                 pickup = store.get("order_pickup", {})
                 in_store = store.get("in_store_only", {})
+
                 status = pickup.get("availability_status") or in_store.get("availability_status")
                 print(f"Matched store {STORE}, status={status}", flush=True)
                 return status
 
-        print("Matching store not found", flush=True)
-        return "UNKNOWN"
+        shipping_status = shipping.get("availability_status")
+        print(f"Shipping status fallback: {shipping_status}", flush=True)
+
+        return shipping_status or "UNKNOWN"
 
     except Exception as e:
         print(f"Error checking stock: {e}", flush=True)
         return None
 
 def send_alert():
-    print("ITEM BACK IN STOCK!", flush=True)
+    print("🚨 ITEM BACK IN STOCK!", flush=True)
 
 def tracker_loop():
     global last_status
