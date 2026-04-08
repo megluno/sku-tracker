@@ -16,6 +16,78 @@ HEADERS = {
     "Origin": "https://www.target.com",
 }
 
+def walk_json(obj, path="root"):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from walk_json(v, f"{path}.{k}")
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            yield from walk_json(v, f"{path}[{i}]")
+    else:
+        yield path, obj
+
+def extract_stock_signals(data):
+    signals = []
+    for path, value in walk_json(data):
+        if not isinstance(value, (str, int, float, bool)) or value is None:
+            continue
+
+        path_lower = path.lower()
+        value_str = str(value)
+
+        interesting = (
+            "availability" in path_lower
+            or "fulfillment" in path_lower
+            or "pickup" in path_lower
+            or "shipping" in path_lower
+            or "store" in path_lower
+            or "inventory" in path_lower
+            or "buy" in path_lower
+            or "stock" in path_lower
+            or "quantity" in path_lower
+        )
+
+        if interesting:
+            signals.append((path, value_str))
+    return signals
+
+def decide_status_from_signals(signals):
+    joined = " | ".join(f"{p}={v}" for p, v in signals).upper()
+
+    positive_terms = [
+        "IN_STOCK",
+        "IN STOCK",
+        "LIMITED_STOCK",
+        "LIMITED STOCK",
+        "PREORDER",
+        "PRE_ORDER",
+        "AVAILABLE",
+        "ADD_TO_CART",
+        "ADD TO CART",
+        "BUY",
+        "PURCHASABLE",
+    ]
+
+    negative_terms = [
+        "OUT_OF_STOCK",
+        "OUT OF STOCK",
+        "UNAVAILABLE",
+        "NOT_SOLD_IN_STORES",
+        "NOT AVAILABLE",
+        "SOLD_OUT",
+        "SOLD OUT",
+    ]
+
+    for term in positive_terms:
+        if term in joined:
+            return "IN_STOCK"
+
+    for term in negative_terms:
+        if term in joined:
+            return "OUT_OF_STOCK"
+
+    return "UNKNOWN"
+
 def check_stock():
     print("check_stock started", flush=True)
 
@@ -31,36 +103,27 @@ def check_stock():
 
     try:
         r = requests.get(url, headers=HEADERS, timeout=20)
-
         print(f"HTTP status: {r.status_code}", flush=True)
+        print(f"Content-Type: {r.headers.get('Content-Type')}", flush=True)
+
+        if not r.text.strip():
+            print("Empty response body", flush=True)
+            return None
 
         data = r.json()
 
         product = data.get("data", {}).get("product", {})
+        print(f"Top-level product keys: {list(product.keys())[:20]}", flush=True)
 
-        # 🔥 NEW: check fulfillment summary
-        fulfillment = product.get("fulfillment", {})
+        signals = extract_stock_signals(product)
+        print(f"Found {len(signals)} stock-related signals", flush=True)
 
-        print(f"Fulfillment keys: {list(fulfillment.keys())}", flush=True)
+        for path, value in signals[:25]:
+            print(f"SIGNAL: {path} = {value}", flush=True)
 
-        # Try pickup first
-        pickup = fulfillment.get("pickup", {})
-        shipping = fulfillment.get("shipping", {})
-
-        pickup_status = pickup.get("availability_status")
-        shipping_status = shipping.get("availability_status")
-
-        print(f"Pickup status: {pickup_status}", flush=True)
-        print(f"Shipping status: {shipping_status}", flush=True)
-
-        # Prefer pickup if exists
-        if pickup_status:
-            return pickup_status
-
-        if shipping_status:
-            return shipping_status
-
-        return "UNKNOWN"
+        status = decide_status_from_signals(signals)
+        print(f"Derived status: {status}", flush=True)
+        return status
 
     except Exception as e:
         print(f"Error checking stock: {e}", flush=True)
@@ -77,7 +140,7 @@ def tracker_loop():
         status = check_stock()
         print(f"Current status: {status}", flush=True)
 
-        if last_status == "OUT_OF_STOCK" and status == "IN_STOCK":
+        if last_status in [None, "OUT_OF_STOCK", "UNKNOWN"] and status == "IN_STOCK":
             send_alert()
 
         last_status = status
