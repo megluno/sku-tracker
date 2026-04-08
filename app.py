@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 import time
 import threading
@@ -16,47 +17,23 @@ HEADERS = {
     "Origin": "https://www.target.com",
 }
 
-POSITIVE_VALUES = {
-    "IN_STOCK",
-    "IN STOCK",
-    "LIMITED_STOCK",
-    "LIMITED STOCK",
-    "PREORDER",
-    "PRE_ORDER",
-    "PRE-ORDER",
-    "AVAILABLE TO SHIP",
-    "SHIP IT",
-    "SAME DAY DELIVERY",
-    "ORDER PICKUP",
-    "PICKUP TODAY",
-}
+POSITIVE_TERMS = [
+    "in stock",
+    "limited stock",
+    "available to ship",
+    "ship it",
+    "add to cart",
+    "same day delivery",
+    "pickup today",
+]
 
-NEGATIVE_VALUES = {
-    "OUT_OF_STOCK",
-    "OUT OF STOCK",
-    "UNAVAILABLE",
-    "SOLD_OUT",
-    "SOLD OUT",
-    "NOT SOLD IN STORES",
-    "NOT AVAILABLE",
-    "TEMPORARILY OUT OF STOCK",
-}
-
-INTERESTING_PATH_WORDS = {
-    "availability",
-    "stock",
-    "inventory",
-    "fulfillment",
-    "pickup",
-    "delivery",
-    "shipping",
-    "order_pickup",
-    "in_store_only",
-    "buybox",
-    "purchasable",
-    "is_out_of_stock",
-    "is_in_stock",
-}
+NEGATIVE_TERMS = [
+    "out of stock",
+    "sold out",
+    "temporarily out of stock",
+    "not available",
+    "unavailable",
+]
 
 def walk_json(obj, path="root"):
     if isinstance(obj, dict):
@@ -68,44 +45,10 @@ def walk_json(obj, path="root"):
     else:
         yield path, obj
 
-def extract_stock_signals(product):
-    signals = []
+def normalize_text(text):
+    return re.sub(r"\s+", " ", str(text).strip().lower())
 
-    for path, value in walk_json(product):
-        if value is None:
-            continue
-
-        path_lower = path.lower()
-        value_str = str(value).strip()
-        value_upper = value_str.upper()
-
-        if not any(word in path_lower for word in INTERESTING_PATH_WORDS):
-            continue
-
-        signals.append((path, value_upper))
-
-    return signals
-
-def decide_status_from_signals(signals):
-    for path, value in signals:
-        if value in POSITIVE_VALUES:
-            return "IN_STOCK", f"{path}={value}"
-
-        if value in NEGATIVE_VALUES:
-            return "OUT_OF_STOCK", f"{path}={value}"
-
-        if value in {"TRUE", "FALSE"}:
-            path_lower = path.lower()
-            if "is_out_of_stock" in path_lower:
-                return ("OUT_OF_STOCK", f"{path}={value}") if value == "TRUE" else ("IN_STOCK", f"{path}={value}")
-            if "is_in_stock" in path_lower or "available_to_promise" in path_lower or "purchasable" in path_lower:
-                return ("IN_STOCK", f"{path}={value}") if value == "TRUE" else ("OUT_OF_STOCK", f"{path}={value}")
-
-    return "UNKNOWN", "no explicit stock signal found"
-
-def check_stock():
-    print("check_stock started", flush=True)
-
+def check_api():
     url = (
         "https://redsky.target.com/redsky_aggregations/v1/web/pdp_client_v1"
         "?key=9f36aeafbe60771e321a7cc95a78140772ab3e96"
@@ -118,34 +61,97 @@ def check_stock():
 
     try:
         r = requests.get(url, headers=HEADERS, timeout=20)
-        print(f"HTTP status: {r.status_code}", flush=True)
-        print(f"Content-Type: {r.headers.get('Content-Type')}", flush=True)
+        print(f"API HTTP status: {r.status_code}", flush=True)
+        print(f"API Content-Type: {r.headers.get('Content-Type')}", flush=True)
 
-        if not r.text.strip():
-            print("Empty response body", flush=True)
-            return None
+        if r.status_code != 200 or not r.text.strip():
+            return "UNKNOWN", "api empty or non-200"
 
         data = r.json()
         product = data.get("data", {}).get("product", {})
 
-        print(f"Top-level product keys: {list(product.keys())[:20]}", flush=True)
+        found_lines = []
 
-        signals = extract_stock_signals(product)
-        print(f"Found {len(signals)} strict stock-related signals", flush=True)
+        for path, value in walk_json(product):
+            if value is None:
+                continue
+            if not isinstance(value, (str, int, float, bool)):
+                continue
 
-        for path, value in signals[:30]:
-            print(f"SIGNAL: {path} = {value}", flush=True)
+            text = normalize_text(value)
+            path_lower = path.lower()
 
-        status, reason = decide_status_from_signals(signals)
-        print(f"Derived status: {status} ({reason})", flush=True)
-        return status
+            # only keep lines that look relevant
+            if any(word in path_lower for word in [
+                "availability", "stock", "inventory", "fulfillment",
+                "shipping", "delivery", "pickup", "cart", "buy", "purchasable"
+            ]) or any(term in text for term in POSITIVE_TERMS + NEGATIVE_TERMS):
+                found_lines.append((path, text))
+
+        print(f"API candidate lines: {len(found_lines)}", flush=True)
+        for path, text in found_lines[:25]:
+            print(f"API SIGNAL: {path} = {text}", flush=True)
+
+        joined = " | ".join(text for _, text in found_lines)
+
+        for term in NEGATIVE_TERMS:
+            if term in joined:
+                return "OUT_OF_STOCK", f"api matched '{term}'"
+
+        for term in POSITIVE_TERMS:
+            if term in joined:
+                return "IN_STOCK", f"api matched '{term}'"
+
+        return "UNKNOWN", "api no explicit stock phrase"
 
     except Exception as e:
-        print(f"Error checking stock: {e}", flush=True)
-        return None
+        print(f"API error: {e}", flush=True)
+        return "UNKNOWN", f"api exception: {e}"
+
+def check_html():
+    url = f"https://www.target.com/p/-/A-{SKU}"
+
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=20)
+        print(f"HTML HTTP status: {r.status_code}", flush=True)
+        print(f"HTML Content-Type: {r.headers.get('Content-Type')}", flush=True)
+
+        if r.status_code != 200 or not r.text.strip():
+            return "UNKNOWN", "html empty or non-200"
+
+        page = normalize_text(r.text)
+        print(f"HTML preview: {page[:300]}", flush=True)
+
+        for term in NEGATIVE_TERMS:
+            if term in page:
+                return "OUT_OF_STOCK", f"html matched '{term}'"
+
+        for term in POSITIVE_TERMS:
+            if term in page:
+                return "IN_STOCK", f"html matched '{term}'"
+
+        return "UNKNOWN", "html no explicit stock phrase"
+
+    except Exception as e:
+        print(f"HTML error: {e}", flush=True)
+        return "UNKNOWN", f"html exception: {e}"
+
+def check_stock():
+    print("check_stock started", flush=True)
+
+    api_status, api_reason = check_api()
+    print(f"API status result: {api_status} ({api_reason})", flush=True)
+
+    if api_status != "UNKNOWN":
+        return api_status
+
+    html_status, html_reason = check_html()
+    print(f"HTML status result: {html_status} ({html_reason})", flush=True)
+
+    return html_status
 
 def send_alert():
-    print("🚨 ITEM BACK IN STOCK!", flush=True)
+    print("🚨 ITEM BACK IN STOCK ONLINE!", flush=True)
 
 def tracker_loop():
     global last_status
