@@ -16,6 +16,48 @@ HEADERS = {
     "Origin": "https://www.target.com",
 }
 
+POSITIVE_VALUES = {
+    "IN_STOCK",
+    "IN STOCK",
+    "LIMITED_STOCK",
+    "LIMITED STOCK",
+    "PREORDER",
+    "PRE_ORDER",
+    "PRE-ORDER",
+    "AVAILABLE TO SHIP",
+    "SHIP IT",
+    "SAME DAY DELIVERY",
+    "ORDER PICKUP",
+    "PICKUP TODAY",
+}
+
+NEGATIVE_VALUES = {
+    "OUT_OF_STOCK",
+    "OUT OF STOCK",
+    "UNAVAILABLE",
+    "SOLD_OUT",
+    "SOLD OUT",
+    "NOT SOLD IN STORES",
+    "NOT AVAILABLE",
+    "TEMPORARILY OUT OF STOCK",
+}
+
+INTERESTING_PATH_WORDS = {
+    "availability",
+    "stock",
+    "inventory",
+    "fulfillment",
+    "pickup",
+    "delivery",
+    "shipping",
+    "order_pickup",
+    "in_store_only",
+    "buybox",
+    "purchasable",
+    "is_out_of_stock",
+    "is_in_stock",
+}
+
 def walk_json(obj, path="root"):
     if isinstance(obj, dict):
         for k, v in obj.items():
@@ -26,67 +68,40 @@ def walk_json(obj, path="root"):
     else:
         yield path, obj
 
-def extract_stock_signals(data):
+def extract_stock_signals(product):
     signals = []
-    for path, value in walk_json(data):
-        if not isinstance(value, (str, int, float, bool)) or value is None:
+
+    for path, value in walk_json(product):
+        if value is None:
             continue
 
         path_lower = path.lower()
-        value_str = str(value)
+        value_str = str(value).strip()
+        value_upper = value_str.upper()
 
-        interesting = (
-            "availability" in path_lower
-            or "fulfillment" in path_lower
-            or "pickup" in path_lower
-            or "shipping" in path_lower
-            or "store" in path_lower
-            or "inventory" in path_lower
-            or "buy" in path_lower
-            or "stock" in path_lower
-            or "quantity" in path_lower
-        )
+        if not any(word in path_lower for word in INTERESTING_PATH_WORDS):
+            continue
 
-        if interesting:
-            signals.append((path, value_str))
+        signals.append((path, value_upper))
+
     return signals
 
 def decide_status_from_signals(signals):
-    joined = " | ".join(f"{p}={v}" for p, v in signals).upper()
+    for path, value in signals:
+        if value in POSITIVE_VALUES:
+            return "IN_STOCK", f"{path}={value}"
 
-    positive_terms = [
-        "IN_STOCK",
-        "IN STOCK",
-        "LIMITED_STOCK",
-        "LIMITED STOCK",
-        "PREORDER",
-        "PRE_ORDER",
-        "AVAILABLE",
-        "ADD_TO_CART",
-        "ADD TO CART",
-        "BUY",
-        "PURCHASABLE",
-    ]
+        if value in NEGATIVE_VALUES:
+            return "OUT_OF_STOCK", f"{path}={value}"
 
-    negative_terms = [
-        "OUT_OF_STOCK",
-        "OUT OF STOCK",
-        "UNAVAILABLE",
-        "NOT_SOLD_IN_STORES",
-        "NOT AVAILABLE",
-        "SOLD_OUT",
-        "SOLD OUT",
-    ]
+        if value in {"TRUE", "FALSE"}:
+            path_lower = path.lower()
+            if "is_out_of_stock" in path_lower:
+                return ("OUT_OF_STOCK", f"{path}={value}") if value == "TRUE" else ("IN_STOCK", f"{path}={value}")
+            if "is_in_stock" in path_lower or "available_to_promise" in path_lower or "purchasable" in path_lower:
+                return ("IN_STOCK", f"{path}={value}") if value == "TRUE" else ("OUT_OF_STOCK", f"{path}={value}")
 
-    for term in positive_terms:
-        if term in joined:
-            return "IN_STOCK"
-
-    for term in negative_terms:
-        if term in joined:
-            return "OUT_OF_STOCK"
-
-    return "UNKNOWN"
+    return "UNKNOWN", "no explicit stock signal found"
 
 def check_stock():
     print("check_stock started", flush=True)
@@ -111,18 +126,18 @@ def check_stock():
             return None
 
         data = r.json()
-
         product = data.get("data", {}).get("product", {})
+
         print(f"Top-level product keys: {list(product.keys())[:20]}", flush=True)
 
         signals = extract_stock_signals(product)
-        print(f"Found {len(signals)} stock-related signals", flush=True)
+        print(f"Found {len(signals)} strict stock-related signals", flush=True)
 
-        for path, value in signals[:25]:
+        for path, value in signals[:30]:
             print(f"SIGNAL: {path} = {value}", flush=True)
 
-        status = decide_status_from_signals(signals)
-        print(f"Derived status: {status}", flush=True)
+        status, reason = decide_status_from_signals(signals)
+        print(f"Derived status: {status} ({reason})", flush=True)
         return status
 
     except Exception as e:
